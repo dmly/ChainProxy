@@ -1,77 +1,18 @@
 package com.lyfam.proxy.demo;
 
-import java.lang.annotation.Annotation;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
-import com.lyfam.proxy.invocation.AbstractInvocationHandler;
-
-interface RealInvoker
-{
-	public Object invoke() throws Throwable;
-}
-
-interface Invoker<A extends Annotation>
-{
-	public Object execute(final Method method, final Object[] args, A ann, RealInvoker realInvoker) throws Throwable;
-}
-
-class Interceptor<T, A extends Annotation> extends AbstractInvocationHandler<T>
-{
-	private Class<A> annotationClass;
-	private Invoker<A> invoker;
-	
-	private Interceptor(T target, Class<A> annotationClass, Invoker<A> invoker)
-    {
-        super(target);
-        this.annotationClass = annotationClass;
-        this.invoker = invoker;
-    }
-	
-	public static <T, A extends Annotation> T createProxy(T obj, Class<A> annotationClass, Invoker<A> invoker)
-    {
-        return (T) Proxy.newProxyInstance(obj.getClass().getClassLoader(), obj
-                .getClass().getInterfaces(), new Interceptor(obj, annotationClass, invoker));
-    }
-	
-	@Override
-	public Object invoke(Object proxy, final Method method, final Object[] args)
-			throws Throwable {
-		Object result = null;
-		A annotation = (A) this.realTarget.getClass().getMethod(method.getName()).getAnnotation(annotationClass);
-        if (annotation != null)
-        {
-        	return invoker.execute(method, args, annotation, new RealInvoker() {
-				@Override
-				public Object invoke() throws Throwable {
-					return method.invoke(Interceptor.this.nextTarget, args);
-				}
-			});
-        }
-        else
-        {
-            result = method.invoke(this.nextTarget, args);
-        }
-
-        return result;
-	}
-	
-}
-
-@Target(ElementType.METHOD)
-@Retention(RetentionPolicy.RUNTIME)
-@interface Loggable
-{
-   String sayWhat() default "";  
-}
+import com.lyfam.proxy.aspects.Retry;
+import com.lyfam.proxy.aspects.RetryProxy;
+import com.lyfam.proxy.invocation.Interceptor;
+import com.lyfam.proxy.invocation.Invoker;
+import com.lyfam.proxy.invocation.TargetInvoker;
 
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
@@ -81,27 +22,8 @@ class Interceptor<T, A extends Annotation> extends AbstractInvocationHandler<T>
 
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
-@interface Loggable1
-{
-   String sayWhat() default "";  
-}
-
-@Target(ElementType.METHOD)
-@Retention(RetentionPolicy.RUNTIME)
 @interface Cache
 {  
-}
-
-@Target(ElementType.METHOD)
-@Retention(RetentionPolicy.RUNTIME)
-@interface Retry
-{
-	int times() default 3;
-}
-
-interface Say
-{
-    public void say();
 }
 
 class DummyInvocationHandler implements InvocationHandler
@@ -128,39 +50,13 @@ class ProxyFactory<T>
 		/*obj = (T) Proxy.newProxyInstance(obj.getClass().getClassLoader(), obj
                 .getClass().getInterfaces(), new DummyInvocationHandler(obj));*/
 		
-		obj = Interceptor.createProxy(obj, Retry.class, new Invoker<Retry>()
-		{
-			@Override
-			public Object execute(Method method, Object[] args, Retry ann,
-					RealInvoker realInvoker) throws Throwable {
-				Object result = null;
-				
-				int retries = 0;
-				while (retries < ann.times())
-				{
-					try
-					{
-						result = realInvoker.invoke();
-						break;
-					}
-					catch (Throwable crap)
-					{
-						retries++;
-						System.out.println(String.format("Crap catched %s times", retries));
-					}					
-				}
-				
-				if (retries >= ann.times()) throw new RuntimeException("Can't handle it anymore");
-				
-				return result;
-			}
-		});
+		obj = Interceptor.createProxy(obj, Retry.class, new RetryProxy());
 		
 		obj = Interceptor.createProxy(obj, Timeit.class, new Invoker<Timeit>()
 		{
 			@Override
 			public Object execute(Method method, Object[] args, Timeit ann,
-					RealInvoker realInvoker) throws Throwable {
+					TargetInvoker realInvoker) throws Throwable {
 				System.out.println("-- Enter the timer");
 				long start = System.nanoTime();
 				Object result = realInvoker.invoke();
@@ -208,19 +104,6 @@ class ProxyFactory<T>
 			}
 		});*/
 		
-		obj = Interceptor.createProxy(obj, Loggable.class, new Invoker<Loggable>()
-		{
-			@Override
-			public Object execute(Method method, Object[] args, Loggable loggable,
-					RealInvoker realInvoker) throws Throwable {
-				String saywhat = loggable.sayWhat();	
-	            System.out.println("++ " + saywhat + " Before " + method.getName());
-	            Object result = realInvoker.invoke();
-	            System.out.println("++ " + saywhat + " After " + method.getName());
-				return result;
-			}
-		});
-		
 		return obj;
 	}
 }
@@ -240,9 +123,9 @@ public class Main implements Say
     }
 
     @Cache
-    @Loggable(sayWhat="Hello")
     @Timeit
-    @Retry
+    @Retry(times=3)
+    @Override
     public void say()
     {
     	Random rand = new Random();
